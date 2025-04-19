@@ -23,11 +23,12 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import settings
 from app.core.logging_config import logger
@@ -36,11 +37,22 @@ from app.endpoints.v1.health.router import router as health_router
 from app.endpoints.v1.root.router import router as root_router
 from app.middlewares.logging import logging_middleware
 
+# Security scheme
+security = HTTPBearer()
+
 # Create FastAPI app
-app = FastAPI(title=settings.PROJECT_NAME,
-              openapi_url=f"{settings.API_V1_STR}/openapi.json",
-              docs_url=f"{settings.API_V1_STR}/docs",
-              redoc_url=f"{settings.API_V1_STR}/redoc")
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url=f"{settings.API_V1_STR}/docs",
+    redoc_url=f"{settings.API_V1_STR}/redoc",
+    swagger_ui_parameters={"tryItOutEnabled": True, "persistAuthorization": True},
+    openapi_tags=[
+        {"name": "auth", "description": "Authentication operations"},
+        {"name": "health", "description": "Health check endpoints"},
+        {"name": "root", "description": "Root endpoints"}
+    ]
+)
 
 # Add session middleware for OAuth
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET)

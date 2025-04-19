@@ -19,9 +19,10 @@ License: Private - All Rights Reserved
 
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Header, Request, Response, status
+from fastapi import APIRouter, Cookie, Header, Request, Response, status, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 from urllib.parse import urlencode
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.controllers.auth_controller import (
     create_auth_error_response,
@@ -35,6 +36,9 @@ from app.controllers.auth_controller import (
 from app.core.logging_config import logger
 from app.models.user import TokenResponse, UserInfo
 from app.core.config import settings
+
+# Security scheme
+security = HTTPBearer()
 
 # Router definition
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -156,7 +160,7 @@ async def refresh(
         ) from e
 
 @router.get("/me", response_model=UserInfo)
-async def me(authorization: str = Header(...)) -> UserInfo:
+async def me(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserInfo:
     """
     Get the current user's information from their access token.
     
@@ -164,7 +168,7 @@ async def me(authorization: str = Header(...)) -> UserInfo:
     header and returns the user information embedded in the token.
     
     Args:
-        authorization: The Authorization header containing the Bearer token
+        credentials: The Authorization credentials containing the Bearer token
         
     Returns:
         UserInfo: The user information from the token
@@ -172,15 +176,7 @@ async def me(authorization: str = Header(...)) -> UserInfo:
     Raises:
         HTTPException: If the token is invalid, expired, or improperly formatted
     """
-    # Check if Authorization header is in the correct format
-    if not authorization.startswith("Bearer "):
-        logger.warning("Invalid authorization header format: %s", authorization)
-        raise create_auth_error_response(
-            "invalid_header_format",
-            "Invalid authorization header format. Expected 'Bearer {token}'"
-        )
-
-    token = authorization.split(" ")[1]
+    token = credentials.credentials
     payload = validate_access_token(token)
 
     if not payload:
