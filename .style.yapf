@@ -1,0 +1,21 @@
+[style]
+# Use Google style
+based_on_style = google
+# 2 spaces indentation
+indent_width = 2
+# 100 chars line length (Google style)
+column_limit = 100
+# Split before arguments if they don't fit on one line
+split_before_named_assigns = True
+# Split before first argument
+split_before_first_argument = True
+# Align closing bracket with visual indentation
+align_closing_bracket_with_visual_indent = True
+# Put closing brackets on a separate line
+dedent_closing_brackets = True
+# Split before dot if not on same line
+split_before_dot = True
+# If an argument/parameter list is going to be split, split before the first element
+split_before_first_argument = True
+# Split complex comprehension
+split_complex_comprehension = True

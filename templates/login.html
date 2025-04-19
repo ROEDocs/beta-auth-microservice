@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Login</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 400px; margin: 40px auto; padding: 2em; background: #f9f9f9; border-radius: 8px; box-shadow: 0 2px 8px #0001; }
+        h1 { font-size: 1.5em; }
+        .btn { display: inline-block; padding: 10px 20px; background: #4285F4; color: #fff; border-radius: 4px; text-decoration: none; font-weight: bold; }
+        pre { background: #eee; padding: 1em; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; } /* Added wrapping */
+    </style>
+</head>
+<body>
+    <h1>FastAPI Auth Server Test Login</h1>
+    <a href="/api/v1/auth/login" class="btn">Sign in with Google</a>
+    <hr>
+    <p>Test refresh (requires refresh_token cookie to be set after login):</p>
+    <button onclick="testRefresh()">Refresh Token</button>
+    <pre id="result">Click refresh to test...</pre>
+
+    <details style="margin-top: 2em; background: #f0f0f0; padding: 1em; border-radius: 4px;">
+        <summary>Guide: Integrating a Frontend with this Auth API</summary>
+
+        <p>This guide explains the steps a frontend developer needs to take to integrate any client application (e.g., React, Vue, Next.js, Angular) with this FastAPI authentication backend.</p>
+
+        <section style="margin-bottom: 1em;">
+            <h4>1. Initial Backend Configuration (Collaboration Required)</h4>
+            <p>Before starting frontend integration, ensure the backend is configured correctly. This typically involves setting environment variables in the backend's <code>.env</code> file:</p>
+            <ul>
+                <li><strong><code>FRONTEND_CALLBACK_URL_BASE</code></strong>: This <strong>must</strong> be set to the exact URL of the page/route in <em>your frontend application</em> where you want users to be redirected after successfully logging in via Google. The backend will append <code>#access_token=...</code> or <code>?error=...</code> to this URL. Example: <code>https://your-frontend-app.com/auth/callback</code>.</li>
+                <li><strong><code>CORS_ORIGIN</code></strong>: This <strong>must</strong> be set to the origin of <em>your frontend application</em> (e.g., <code>https://your-frontend-app.com</code>) to allow the browser to make requests (like the refresh token request) from your frontend to the backend API and crucially, to allow the browser to send the <code>refresh_token</code> cookie.</li>
+            </ul>
+        </section>
+
+        <hr style="margin: 1.5em 0;">
+
+        <section style="margin-bottom: 1em;">
+            <h4>2. Implementing the Login Flow</h4>
+            <ul>
+                <li><strong>Action:</strong> To initiate login, simply redirect the user's browser from your frontend to the backend endpoint: <code>GET /api/v1/auth/login</code>.</li>
+                <li><strong>Result:</strong> The backend handles the redirect to Google. After Google authentication, the user's browser will be redirected back to the URL specified in <code>FRONTEND_CALLBACK_URL_BASE</code>.</li>
+            </ul>
+        </section>
+
+        <hr style="margin: 1.5em 0;">
+
+        <section style="margin-bottom: 1em;">
+            <h4>3. Handling the Callback Redirect in Your Frontend</h4>
+            <p>Create the callback route/page in your frontend application (e.g., <code>/auth/callback</code>) that corresponds to the <code>FRONTEND_CALLBACK_URL_BASE</code> setting.</p>
+            <p>On this page load, your frontend JavaScript needs to:</p>
+            <ol>
+                <li><strong>Check for Access Token:</strong> Look for an <code>access_token</code> in the URL fragment. Example:
+                    <pre><code class="language-javascript">const hash = window.location.hash.substring(1);
+const params = new URLSearchParams(hash);
+const accessToken = params.get("access_token");</code></pre>
+                </li>
+                <li><strong>If Access Token Exists:</strong>
+                    <ul>
+                        <li><strong>Store the Token:</strong> Save the <code>accessToken</code> securely. Options include:
+                            <ul>
+                                <li><strong>In-memory variable (Recommended):</strong> Simple, secure against XSS, but lost on page refresh/tab close. Suitable for Single Page Applications (SPAs) that manage state well.</li>
+                                <li><strong>Session Storage:</strong> Persists for the session (tab), secure against XSS. Cleared when tab/browser closes.</li>
+                                <li><strong>Local Storage (Use with Caution):</strong> Persists indefinitely, vulnerable to XSS attacks. Generally not recommended for storing tokens unless you have specific XSS mitigation strategies.</li>
+                            </ul>
+                        </li>
+                        <li><strong>Clean the URL:</strong> Remove the token fragment from the URL bar without reloading the page. Example:
+                            <pre><code class="language-javascript">history.replaceState(null, null, window.location.pathname + window.location.search); // Keep query params if any</code></pre>
+                        </li>
+                        <li><strong>Redirect User:</strong> Navigate the user to the main authenticated part of your application.</li>
+                    </ul>
+                </li>
+                <li><strong>Check for Errors:</strong> If no access token is found, check for error details in the URL query parameters. Example:
+                     <pre><code class="language-javascript">const queryParams = new URLSearchParams(window.location.search);
+const error = queryParams.get("error");
+const errorMessage = queryParams.get("message");
+if (error) {
+  // Display errorMessage to the user
+  // Clean the URL: history.replaceState(null, null, window.location.pathname);
+}</code></pre>
+                </li>
+            </ol>
+             <p><strong>Note:</strong> The <code>refresh_token</code> is handled automatically by the browser via an <code>HttpOnly</code> cookie set by the backend. Your frontend JavaScript does not need to (and cannot) access it directly.</p>
+        </section>
+
+        <hr style="margin: 1.5em 0;">
+
+        <section style="margin-bottom: 1em;">
+            <h4>4. Making Authenticated API Calls</h4>
+            <ul>
+                <li>When calling protected backend endpoints (like a hypothetical <code>/api/v1/user/profile</code> or the built-in <code>/api/v1/auth/me</code>), retrieve your stored access token.</li>
+                <li>Include it in the <code>Authorization</code> header of your request. Example (using <code>fetch</code>):
+                    <pre><code class="language-javascript">const token = getStoredAccessToken(); // Your function to get the token
+fetch("/api/v1/auth/me", {
+  headers: {
+    "Authorization": `Bearer ${token}`
+  }
+})
+.then(response => /* ... */);</code></pre>
+                </li>
+            </ul>
+        </section>
+
+        <hr style="margin: 1.5em 0;">
+
+        <section style="margin-bottom: 1em;">
+            <h4>5. Handling Token Expiry & Refreshing Tokens</h4>
+            <p>Access tokens are short-lived. When one expires, API calls using it will fail, typically with a <code>401 Unauthorized</code> status.</p>
+            <p>Your frontend needs logic (often in an HTTP interceptor or a wrapper around your API calls) to handle this:</p>
+            <ol>
+                <li><strong>Detect 401 Error:</strong> If an API call receives a 401 status code.</li>
+                <li><strong>Attempt Refresh:</strong> Make a <code>POST</code> request from your frontend to the backend endpoint: <code>POST /api/v1/auth/refresh</code>.
+                    <ul>
+                        <li><strong>IMPORTANT:</strong> This request <strong>must</strong> include credentials for the browser to send the <code>refresh_token</code> cookie. Ensure your HTTP client (e.g., <code>fetch</code>, Axios) is configured to send credentials. Example (using <code>fetch</code>):
+                            <pre><code class="language-javascript">fetch("/api/v1/auth/refresh", {
+  method: "POST",
+  credentials: "include", // Crucial for sending the HttpOnly cookie!
+  headers: { "Content-Type": "application/json" }
+})
+.then(async response => { /* ... handle response ... */ });</code></pre>
+                        </li>
+                         <li>This only works if the frontend origin matches the backend's <code>CORS_ORIGIN</code> setting.</li>
+                    </ul>
+                </li>
+                <li><strong>Handle Refresh Success (e.g., 200 OK):</strong>
+                    <ul>
+                        <li>The response body will contain a JSON object with the new access token: <code>{ "access_token": "...", "token_type": "bearer" }</code>.</li>
+                        <li>Parse the response to get the <code>newAccessToken</code>.</li>
+                        <li>Store this new token, replacing the expired one.</li>
+                        <li>Retry the original API request (the one that failed with 401) using the new token.</li>
+                    </ul>
+                </li>
+                <li><strong>Handle Refresh Failure (e.g., 401 Unauthorized):</strong>
+                    <ul>
+                        <li>This likely means the refresh token itself is invalid, expired, or has been revoked.</li>
+                        <li>Clear any stored access token in your frontend.</li>
+                        <li>Redirect the user to the login page/flow.</li>
+                    </ul>
+                </li>
+            </ol>
+        </section>
+
+         <hr style="margin: 1.5em 0;">
+
+        <section>
+            <h4>6. Implementing Logout</h4>
+            <ol>
+                <li><strong>Call Backend Endpoint:</strong> When the user clicks logout, make a request from your frontend to <code>GET /api/v1/auth/logout</code>. This request also needs credentials enabled to allow the backend to clear the cookie.
+                    <pre><code class="language-javascript">fetch("/api/v1/auth/logout", {
+  method: "GET",
+  credentials: "include" // Crucial for clearing the HttpOnly cookie!
+})
+.then(response => { /* ... handle success ... */ });</code></pre>
+                </li>
+                <li><strong>Clear Frontend Token:</strong> Regardless of the backend call's success (it might fail if the cookie was already gone), your frontend <strong>must</strong> clear its own stored access token.</li>
+                <li><strong>Redirect User:</strong> Navigate the user away from authenticated sections, typically back to the login page or a public landing page.</li>
+            </ol>
+        </section>
+
+    </details>
+
+    <script>
+        // Function to test token refresh
+        async function testRefresh() {
+            const resultEl = document.getElementById("result");
+            resultEl.textContent = "Refreshing...";
+            try {
+                const response = await fetch("/api/v1/auth/refresh", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    // Handle potential object detail from FastAPI
+                    let errorMessage = "Refresh failed";
+                    if (data.detail && typeof data.detail === "string") {
+                        errorMessage = data.detail;
+                    } else if (data.detail && data.detail.message) {
+                        errorMessage = data.detail.message;
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                // Display the access token and decoded payload if present
+                let tokenDisplay = `New Access Token Received (from Refresh):
+${JSON.stringify(data, null, 2)}`;
+                if (data.access_token) {
+                    try {
+                        const tokenParts = data.access_token.split(".");
+                        if (tokenParts.length === 3) {
+                            // Decode the payload (middle part) - Handle Base64URL
+                            const base64Url = tokenParts[1];
+                            let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                            const padding = '==='.slice(0, (4 - base64.length % 4) % 4);
+                            const paddedBase64 = base64 + padding;
+                            const payload = JSON.parse(atob(paddedBase64));
+                            tokenDisplay += `
+
+Decoded Token Payload:
+${JSON.stringify(payload, null, 2)}`;
+                        }
+                    } catch (e) {
+                        console.error("Error parsing refreshed token:", e);
+                        tokenDisplay += `
+
+(Error parsing token payload: ${e.message})`;
+                    }
+                }
+                resultEl.textContent = tokenDisplay;
+
+            } catch (error) {
+                console.error("Refresh error:", error);
+                resultEl.textContent = `Refresh Error: ${error.message}`;
+            }
+        }
+
+        // Function to handle page load and check for callback results
+        function handleCallback() {
+            const resultEl = document.getElementById("result");
+            const hashParams = new URLSearchParams(window.location.hash.substring(1)); // Remove #
+            const queryParams = new URLSearchParams(window.location.search);
+
+            // --- Explainer --- //
+            // The access token is expected in the URL hash after a successful login redirect.
+            // See the "How Tokens are Handled" section below for more details.
+            const accessToken = hashParams.get("access_token");
+            const error = queryParams.get("error");
+            const errorMessage = queryParams.get("message");
+
+            if (accessToken) {
+                // Parse the JWT token to display its contents
+                try {
+                    const tokenParts = accessToken.split(".");
+                    if (tokenParts.length === 3) {
+                        // Decode the payload (middle part) - Handle Base64URL
+                        const base64Url = tokenParts[1];
+                        let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                        const padding = '==='.slice(0, (4 - base64.length % 4) % 4);
+                        const paddedBase64 = base64 + padding;
+                        const payload = JSON.parse(atob(paddedBase64));
+
+                        // Display the raw token and the decoded payload
+                        const rawTokenDisplay = `Access Token Received (URL Fragment):
+${accessToken}`;
+                        const payloadDisplay = `\n\nDecoded Token Payload (Full Object):
+${JSON.stringify(payload, null, 2)}`;
+                        resultEl.textContent = rawTokenDisplay + payloadDisplay;
+
+                        // Log the raw token for debugging
+                        console.log("Access Token Received:", accessToken);
+
+                    } else {
+                        resultEl.textContent = `Login Success! Invalid Token Format (Wrong number of parts). Token:
+${accessToken}`;
+                    }
+                } catch (e) {
+                    // Fallback if token parsing/display fails
+                    console.error("Error processing access token:", e); // Log the actual error
+                    resultEl.textContent = `Error displaying token details. Check console. Raw Token:
+${accessToken}`;
+                }
+
+                // Clear the hash
+                history.replaceState(null, null, " ");
+            } else if (error) {
+                resultEl.textContent = `Login Error: [${error}] ${errorMessage || "Unknown error"}`;
+                // Clear the query params
+                history.replaceState(null, null, "/");
+            } else {
+                // Default message if no token or error - Use correct quotes
+                resultEl.textContent = "Click \"Sign in with Google\" or \"Refresh Token\".";
+            }
+        }
+
+        // Run handler on page load
+        window.onload = handleCallback;
+    </script>
+</body>
+</html> 

@@ -1,0 +1,31 @@
+# Git files
+.git
+.gitignore
+
+# Python virtual environment
+.venv
+*.pyc
+__pycache__/
+
+# Local environment file (should use build args or runtime config)
+.env
+
+# OS files
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+
+# Test reports/cache
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Logs
+logs/
+*.log
+
+# Other misc
+*.swp
+*.swo 

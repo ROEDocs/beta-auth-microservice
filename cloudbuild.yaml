@@ -1,0 +1,36 @@
+steps:
+  # Step 1: Build the Docker image
+  # Uses the official Docker builder from Google Cloud Build
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-t',
+        # Target image name in Artifact Registry: LOCATION-docker.pkg.dev/PROJECT_ID/REPOSITORY/IMAGE:TAG
+        # We use substitutions for flexibility. $PROJECT_ID and $SHORT_SHA are provided by Cloud Build.
+        '${_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA',
+        # Build context is the current directory
+        '.'
+      ]
+    id: 'Build Docker Image'
+
+  # Step 2: Push the Docker image to Artifact Registry
+  # This makes the image available for deployment (e.g., to Cloud Run)
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      ['push', '${_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA']
+    id: 'Push Image to Artifact Registry'
+
+# List the images that were built
+images:
+  - '${_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA'
+
+# Define user substitutions with default values
+# These can be overridden when submitting the build manually or via triggers
+substitutions:
+  _LOCATION: us-central1                                # Default Artifact Registry location
+  _REPOSITORY: cloud-run-source-deploy                # Default Artifact Registry repository name (common for Cloud Run)
+  _IMAGE_NAME: fastapi-auth-server                    # Default image name
+
+options:
+  logging: CLOUD_LOGGING_ONLY # Send logs only to Cloud Logging 
