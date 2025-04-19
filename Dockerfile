@@ -35,5 +35,6 @@ COPY . .
 EXPOSE 8000
 
 # Define the command to run the application using Uvicorn
-# Use 0.0.0.0 to ensure it's accessible from outside the container
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Uvicorn will automatically use the $PORT environment variable if set (by Cloud Run),
+# otherwise it defaults to 8000 (useful for local testing without PORT set).
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0"] 
