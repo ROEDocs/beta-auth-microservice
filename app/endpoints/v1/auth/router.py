@@ -38,7 +38,7 @@ from app.models.user import TokenResponse, UserInfo
 from app.core.config import settings
 
 # Security scheme
-security = HTTPBearer()
+security = HTTPBearer(auto_error=True, scheme_name="JWT")
 
 # Router definition
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -176,7 +176,14 @@ async def me(credentials: HTTPAuthorizationCredentials = Depends(security)) -> U
     Raises:
         HTTPException: If the token is invalid, expired, or improperly formatted
     """
+    # Get token from credentials
     token = credentials.credentials
+    
+    # Handle case where token might start with "Bearer " due to duplicate prefix
+    if token.startswith("Bearer "):
+        token = token[7:]  # Remove the duplicate "Bearer " prefix
+        
+    # Validate the token
     payload = validate_access_token(token)
 
     if not payload:
