@@ -18,8 +18,8 @@ from app.core.config import settings
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8002,  # Changed port from 8001 to 8002
+        host="localhost",
+        port=8000,  # Changed port from 8001 to 8002
         reload=settings.DEBUG,  # Enable reload only in debug mode
         log_level="info"  # Use Uvicorn's logger, can be configured further
     )
