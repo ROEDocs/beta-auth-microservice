@@ -18,6 +18,9 @@ License: Private - All Rights Reserved
 """
 
 from typing import Optional
+from datetime import datetime, timedelta, timezone
+from jose import jwt, JWTError
+from jose.exceptions import ExpiredSignatureError
 
 from fastapi import APIRouter, Cookie, Header, Request, Response, status, Depends, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -33,6 +36,7 @@ from app.controllers.auth_controller import (
     set_refresh_token_cookie,
     validate_access_token,
     validate_refresh_token,
+    ALGORITHM
 )
 from app.core.logging_config import logger
 from app.models.user import TokenResponse, UserInfo
@@ -51,13 +55,11 @@ async def login(
     origin_hint: Optional[str] = None # NEW: Hint for the frontend origin
 ) -> RedirectResponse:
     """
-    Initiate the Google OAuth login flow.
+    Initiate the Google OAuth login flow using stateless JWT state.
 
-    This endpoint redirects the user to Google's authentication page.
-    It validates the requesting frontend origin (`origin_hint`) against a configured
-    allowlist. It stores the desired final redirect URL (`next_url`), the validated
-    origin (`origin_url`), and a CSRF token (`state`) in the session before redirecting.
-    After successful authentication, Google will redirect back to the callback endpoint.
+    Validates origin/path, creates a short-lived JWT containing this info
+    plus a CSRF nonce, and passes this JWT as the 'state' parameter to Google.
+    Removes reliance on server-side session cookies for redirect state.
 
     Args:
         request: The FastAPI request object containing URL information and session.
@@ -105,110 +107,115 @@ async def login(
         if not final_next_url:
             final_next_url = "/"
 
-    # Generate secure state for CSRF protection
-    state = secrets.token_urlsafe(32)
-    # Store state, the validated origin, and the next_url path in session
-    request.session['oauth_state'] = state
-    request.session['oauth_origin_url'] = validated_origin_url # Store the validated origin
-    request.session['oauth_next_url'] = final_next_url
-    logger.debug(
-        "Generated state: %s, Stored Origin: %s, Stored next_url: %s",
-        state,
-        validated_origin_url,
-        final_next_url
-    )
+    # --- Create Stateless JWT for State --- 
+    state_nonce = secrets.token_urlsafe(16) # CSRF nonce
+    state_expiry = datetime.now(timezone.utc) + timedelta(minutes=10) # Short expiry
+    state_payload = {
+        "nonce": state_nonce,
+        "origin": validated_origin_url,
+        "next": final_next_url,
+        "exp": state_expiry
+    }
+    try:
+        state_jwt = jwt.encode(state_payload, settings.JWT_SECRET, algorithm=ALGORITHM)
+    except Exception as e:
+        logger.critical(f"Failed to encode state JWT: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to prepare authentication request.")
+    # --- End Create State JWT --- 
+
+    logger.debug("Generated state JWT for origin: %s, next: %s", validated_origin_url, final_next_url)
 
     redirect_uri = request.url_for("auth_callback")
-    # Pass the generated state to Google
-    return await oauth.google.authorize_redirect(request, redirect_uri, state=state)
+    # Pass the generated STATE JWT to Google
+    return await oauth.google.authorize_redirect(request, redirect_uri, state=state_jwt)
 
 @router.get("/callback")
 async def auth_callback(request: Request) -> RedirectResponse:
     """
-    Handle Google OAuth callback, issue JWT tokens, and redirect to the frontend.
+    Handle Google OAuth callback using stateless JWT state.
 
-    This endpoint receives the authorization code and state from Google,
-    validates the state against the session, retrieves the validated origin URL
-    and the desired path from the session, exchanges the code for tokens,
-    and redirects the user back to the original frontend origin and path,
-    passing the access token in the URL fragment or error details in query parameters.
+    Receives the state JWT from Google, validates and decodes it,
+    exchanges the Google code for tokens, and redirects the user
+    to the origin+path specified within the state JWT.
+    "
+    # --- REMOVE SESSION RETRIEVAL --- 
+    # stored_state = request.session.pop('oauth_state', None)
+    # stored_origin_url = request.session.pop('oauth_origin_url', None)
+    # final_redirect_url_path = request.session.pop('oauth_next_url', '/')
+    # --- END REMOVE SESSION RETRIEVAL --- 
 
-    Args:
-        request: The FastAPI request object containing code, state, and session.
+    # Get state JWT from Google's redirect query parameters
+    state_jwt = request.query_params.get('state')
+    google_code = request.query_params.get('code')
 
-    Returns:
-        RedirectResponse: Redirects the user to the original frontend URL+path with
-                        access token in fragment or error in query parameters.
-    """
-    # Retrieve state, origin, and next_url from session FIRST
-    stored_state = request.session.pop('oauth_state', None)
-    # Retrieve the validated origin stored during /login
-    stored_origin_url = request.session.pop('oauth_origin_url', None)
-    final_redirect_url_path = request.session.pop('oauth_next_url', '/')
-    logger.debug(
-        "Callback received. Stored state: %s, Stored Origin: %s, Stored Path: %s",
-        stored_state,
-        stored_origin_url,
-        final_redirect_url_path
-    )
+    if not state_jwt:
+        logger.error("Callback missing state JWT parameter.")
+        # Cannot determine redirect target safely, maybe redirect to a default error page?
+        # Or return a JSON error if possible?
+        # For now, raising 400, but might need a user-friendly redirect.
+        raise HTTPException(status_code=400, detail="Missing state information from authentication provider.")
 
-    # Get state from Google's redirect query parameters
-    state_from_google = request.query_params.get('state')
+    # --- Decode and Validate State JWT --- 
+    try:
+        state_payload = jwt.decode(state_jwt, settings.JWT_SECRET, algorithms=[ALGORITHM])
+        # Extract data (validation happens implicitly via decode)
+        final_origin_url = state_payload.get("origin")
+        final_redirect_url_path = state_payload.get("next", "/") # Default path
+        # nonce = state_payload.get("nonce") # Nonce available if needed
 
-    # --- Determine Redirect Base URL for Errors/Fallback ---
-    # Use stored origin if available, otherwise fallback to a safe default (e.g., first allowed origin)
-    fallback_origin = settings.allowed_frontend_origins_list[0] if settings.allowed_frontend_origins_list else None
-    error_redirect_base_url = stored_origin_url or fallback_origin
-    if not error_redirect_base_url:
-        logger.critical("Cannot determine a safe redirect origin for errors. ALLOWED_FRONTEND_ORIGINS might be empty.")
-        # Handle this critical failure - maybe return a plain error response instead of redirecting
-        return JSONResponse(
-            status_code=500,
-            content={"error": "configuration_error", "message": "Cannot determine safe redirect origin."}
+        if not final_origin_url:
+            raise JWTError("State JWT missing 'origin' claim.")
+
+        logger.debug(
+            "Decoded State JWT. Origin: %s, Path: %s",
+            final_origin_url,
+            final_redirect_url_path
         )
+
+    except ExpiredSignatureError:
+        logger.warning("Expired state JWT received.")
+        # Maybe redirect to login again with an error message?
+        # Constructing a safe error redirect base
+        fallback_origin = settings.allowed_frontend_origins_list[0] if settings.allowed_frontend_origins_list else None
+        error_msg = "Authentication request timed out. Please try again."
+        if fallback_origin:
+            error_params = urlencode({"error": "state_expired", "message": error_msg})
+            return RedirectResponse(f"{fallback_origin}/?{error_params}") # Redirect to root of first allowed origin
+        else:
+            raise HTTPException(status_code=400, detail=error_msg)
+
+    except JWTError as e:
+        logger.error(f"Invalid state JWT received: {e}")
+        fallback_origin = settings.allowed_frontend_origins_list[0] if settings.allowed_frontend_origins_list else None
+        error_msg = "Invalid state parameter received. Authentication failed."
+        if fallback_origin:
+            error_params = urlencode({"error": "invalid_state", "message": error_msg})
+            return RedirectResponse(f"{fallback_origin}/?{error_params}")
+        else:
+            raise HTTPException(status_code=400, detail=error_msg)
+    # --- End Decode State JWT --- 
+
+    # --- Construct Base URLs using decoded state --- 
     # Ensure path starts with / but avoid //
-    safe_error_path = f"/{final_redirect_url_path.lstrip('/')}"
-    if safe_error_path == "//": safe_error_path = "/"
-    error_redirect_base = f"{error_redirect_base_url.rstrip('/')}{safe_error_path}"
-    # --- End Error Redirect Base Setup ---
-
-    # Validate state FIRST for security
-    if not state_from_google or not stored_state or state_from_google != stored_state:
-        logger.error(
-            "State mismatch error. Google State: %s, Session State: %s",
-            state_from_google,
-            stored_state
-        )
-        error_params = urlencode({
-            "error": "state_mismatch",
-            "message": "Invalid state parameter. Potential CSRF attack."
-        })
-        return RedirectResponse(f"{error_redirect_base}?{error_params}")
-
-    # Validate we have the origin URL needed for the final redirect
-    if not stored_origin_url:
-        logger.error("Origin URL missing from session after state validation.")
-        error_params = urlencode({
-            "error": "session_error",
-            "message": "Session data incomplete. Could not determine redirect origin."
-        })
-        return RedirectResponse(f"{error_redirect_base}?{error_params}")
-
-
-    # State is valid, proceed with handling the callback via the controller
-    user_info, error_message = await handle_oauth_callback(request)
-
-    # --- Construct Final Redirect Base using Stored Origin ---
-    # Ensure path starts with a single / (handle cases like "/" and "path")
     safe_path = f"/{final_redirect_url_path.lstrip('/')}"
     if safe_path == "//": safe_path = "/"
-    # Use the validated origin retrieved from the session
-    final_redirect_base = f"{stored_origin_url}{safe_path}"
-    # --- End Final Redirect Base Setup ---
+    # Use the origin extracted from the validated state JWT
+    final_redirect_base = f"{final_origin_url}{safe_path}"
+    # --- End Base URL Construction ---
+
+    # Check for Google code
+    if not google_code:
+        logger.error("Callback missing Google authorization code.")
+        error_params = urlencode({"error": "missing_code", "message": "Authorization code missing.")
+        return RedirectResponse(f"{final_redirect_base}?{error_params}")
+
+    # State JWT is valid, proceed with handling the Google code exchange
+    # Note: handle_oauth_callback might need slight adjustment if it was also relying on session
+    user_info, error_message = await handle_oauth_callback(request) # Pass request for code
 
     if error_message:
-        # Redirect back to the originally intended frontend path with error info
-        logger.error("OAuth callback error: %s", error_message)
+        # Redirect back to the originally intended frontend origin+path with error info
+        logger.error("OAuth callback error after code exchange: %s", error_message)
         query_params = urlencode({"error": "callback_failed", "message": error_message})
         return RedirectResponse(url=f"{final_redirect_base}?{query_params}")
 
