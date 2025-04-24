@@ -77,9 +77,9 @@ class Settings(BaseSettings):
 
     # Validate that CORS_ORIGIN is within ALLOWED_FRONTEND_ORIGINS if both are set
     @model_validator(mode='after')
-    def check_origins(cls, values):
-        cors_origin = values.get('CORS_ORIGIN')
-        allowed_origins_list = values.get('allowed_frontend_origins_list')
+    def check_origins(self) -> 'Settings':
+        cors_origin = self.CORS_ORIGIN
+        allowed_origins_list = self.allowed_frontend_origins_list
 
         if cors_origin and allowed_origins_list:
             # Ensure CORS_ORIGIN is just one for this check, or iterate if it's multi-valued
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
         elif not allowed_origins_list:
              logger.warning("ALLOWED_FRONTEND_ORIGINS is not set or empty. Dynamic redirects will likely fail.")
 
-        return values
+        return self
 
     class Config:
         """
