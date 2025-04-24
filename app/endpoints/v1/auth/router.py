@@ -19,7 +19,7 @@ License: Private - All Rights Reserved
 
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Header, Request, Response, status, Depends
+from fastapi import APIRouter, Cookie, Header, Request, Response, status, Depends, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from urllib.parse import urlencode, urlparse, urlunparse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -45,23 +45,55 @@ security = HTTPBearer(auto_error=True, scheme_name="JWT")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.get("/login")
-async def login(request: Request, next_url: str = "/") -> RedirectResponse:
+async def login(
+    request: Request,
+    next_url: str = "/",
+    origin_hint: Optional[str] = None # NEW: Hint for the frontend origin
+) -> RedirectResponse:
     """
     Initiate the Google OAuth login flow.
 
     This endpoint redirects the user to Google's authentication page.
-    It stores the desired final redirect URL (`next_url`) and a CSRF token (`state`)
-    in the session before redirecting. After successful authentication,
-    Google will redirect back to the callback endpoint.
+    It validates the requesting frontend origin (`origin_hint`) against a configured
+    allowlist. It stores the desired final redirect URL (`next_url`), the validated
+    origin (`origin_url`), and a CSRF token (`state`) in the session before redirecting.
+    After successful authentication, Google will redirect back to the callback endpoint.
 
     Args:
-        request: The FastAPI request object containing URL information and session
+        request: The FastAPI request object containing URL information and session.
         next_url: The relative path on the frontend to redirect to after login.
                   Defaults to "/". Must be a relative path.
+        origin_hint: The base URL (scheme+host+port) of the frontend initiating
+                     the login. MUST be provided by the frontend and MUST be in the
+                     backend's ALLOWED_FRONTEND_ORIGINS list.
 
     Returns:
-        RedirectResponse: Redirect to Google's OAuth consent screen
+        RedirectResponse: Redirect to Google's OAuth consent screen.
+
+    Raises:
+        HTTPException: If the origin_hint is missing or not allowed.
     """
+    # --- Origin Validation --- 
+    if not origin_hint:
+        logger.error("Login request missing origin_hint parameter.")
+        raise HTTPException(status_code=400, detail="Missing origin_hint parameter. Frontend must provide its base URL.")
+
+    validated_origin_url = origin_hint.strip().rstrip('/')
+    allowed_origins = settings.allowed_frontend_origins_list
+
+    if not allowed_origins:
+         logger.critical("ALLOWED_FRONTEND_ORIGINS is not configured on the backend! Cannot validate origin.")
+         raise HTTPException(status_code=500, detail="Backend origin allowlist not configured.")
+
+    if validated_origin_url not in allowed_origins:
+        logger.error(
+            "Disallowed origin_hint provided: %s. Allowed: %s",
+            validated_origin_url,
+            allowed_origins
+        )
+        raise HTTPException(status_code=403, detail=f"Origin '{validated_origin_url}' is not allowed to initiate login.")
+    # --- End Origin Validation --- 
+
     # Basic validation for next_url to prevent open redirect vulnerabilities
     parsed_next_url = urlparse(next_url)
     if parsed_next_url.scheme or parsed_next_url.netloc:
@@ -75,9 +107,16 @@ async def login(request: Request, next_url: str = "/") -> RedirectResponse:
 
     # Generate secure state for CSRF protection
     state = secrets.token_urlsafe(32)
+    # Store state, the validated origin, and the next_url path in session
     request.session['oauth_state'] = state
+    request.session['oauth_origin_url'] = validated_origin_url # Store the validated origin
     request.session['oauth_next_url'] = final_next_url
-    logger.debug("Generated state: %s, Stored next_url: %s", state, final_next_url)
+    logger.debug(
+        "Generated state: %s, Stored Origin: %s, Stored next_url: %s",
+        state,
+        validated_origin_url,
+        final_next_url
+    )
 
     redirect_uri = request.url_for("auth_callback")
     # Pass the generated state to Google
@@ -89,30 +128,49 @@ async def auth_callback(request: Request) -> RedirectResponse:
     Handle Google OAuth callback, issue JWT tokens, and redirect to the frontend.
 
     This endpoint receives the authorization code and state from Google,
-    validates the state against the session, exchanges the code
-    for user information, issues JWT tokens, sets the refresh token in a cookie,
-    and redirects the user back to the frontend application path stored in the session,
-    passing the access token in the URL fragment on success, or error details in query
-    parameters on failure.
+    validates the state against the session, retrieves the validated origin URL
+    and the desired path from the session, exchanges the code for tokens,
+    and redirects the user back to the original frontend origin and path,
+    passing the access token in the URL fragment or error details in query parameters.
 
     Args:
-        request: The FastAPI request object containing the authorization code and state
+        request: The FastAPI request object containing code, state, and session.
 
     Returns:
-        RedirectResponse: Redirects the user to the original frontend URL with
+        RedirectResponse: Redirects the user to the original frontend URL+path with
                         access token in fragment or error in query parameters.
     """
-    # Retrieve state and next_url from session FIRST
+    # Retrieve state, origin, and next_url from session FIRST
     stored_state = request.session.pop('oauth_state', None)
+    # Retrieve the validated origin stored during /login
+    stored_origin_url = request.session.pop('oauth_origin_url', None)
     final_redirect_url_path = request.session.pop('oauth_next_url', '/')
     logger.debug(
-        "Callback received. Stored state: %s, Stored next_url path: %s",
+        "Callback received. Stored state: %s, Stored Origin: %s, Stored Path: %s",
         stored_state,
+        stored_origin_url,
         final_redirect_url_path
     )
 
     # Get state from Google's redirect query parameters
     state_from_google = request.query_params.get('state')
+
+    # --- Determine Redirect Base URL for Errors/Fallback ---
+    # Use stored origin if available, otherwise fallback to a safe default (e.g., first allowed origin)
+    fallback_origin = settings.allowed_frontend_origins_list[0] if settings.allowed_frontend_origins_list else None
+    error_redirect_base_url = stored_origin_url or fallback_origin
+    if not error_redirect_base_url:
+        logger.critical("Cannot determine a safe redirect origin for errors. ALLOWED_FRONTEND_ORIGINS might be empty.")
+        # Handle this critical failure - maybe return a plain error response instead of redirecting
+        return JSONResponse(
+            status_code=500,
+            content={"error": "configuration_error", "message": "Cannot determine safe redirect origin."}
+        )
+    # Ensure path starts with / but avoid //
+    safe_error_path = f"/{final_redirect_url_path.lstrip('/')}"
+    if safe_error_path == "//": safe_error_path = "/"
+    error_redirect_base = f"{error_redirect_base_url.rstrip('/')}{safe_error_path}"
+    # --- End Error Redirect Base Setup ---
 
     # Validate state FIRST for security
     if not state_from_google or not stored_state or state_from_google != stored_state:
@@ -121,34 +179,32 @@ async def auth_callback(request: Request) -> RedirectResponse:
             state_from_google,
             stored_state
         )
-        # Redirect to a generic frontend error page or root, indicating state error
         error_params = urlencode({
             "error": "state_mismatch",
             "message": "Invalid state parameter. Potential CSRF attack."
         })
-        # Use FRONTEND_CALLBACK_URL_BASE as a fallback for the host/scheme part
-        # Or construct a safe default error path
-        base_url = settings.FRONTEND_CALLBACK_URL_BASE.rstrip('/')
-        # Ensure final_redirect_url_path starts with / but avoid //
-        safe_error_path = f"/{final_redirect_url_path.lstrip('/')}"
-        if safe_error_path == "//": safe_error_path = "/"
-        error_redirect_url = f"{base_url}{safe_error_path}?{error_params}"
-        return RedirectResponse(error_redirect_url)
+        return RedirectResponse(f"{error_redirect_base}?{error_params}")
+
+    # Validate we have the origin URL needed for the final redirect
+    if not stored_origin_url:
+        logger.error("Origin URL missing from session after state validation.")
+        error_params = urlencode({
+            "error": "session_error",
+            "message": "Session data incomplete. Could not determine redirect origin."
+        })
+        return RedirectResponse(f"{error_redirect_base}?{error_params}")
+
 
     # State is valid, proceed with handling the callback via the controller
     user_info, error_message = await handle_oauth_callback(request)
 
-    # Use the stored final_redirect_url_path for the redirect base
-    # Combine with the configured CORS origin (or a base URL setting) to get full URL
-    # This assumes the frontend runs on the CORS_ORIGIN
-    # Be cautious if frontend and backend origins differ significantly beyond hostname/port
-    frontend_base_url = settings.CORS_ORIGIN.split(",")[0].strip() # Use first CORS origin
-
+    # --- Construct Final Redirect Base using Stored Origin ---
     # Ensure path starts with a single / (handle cases like "/" and "path")
     safe_path = f"/{final_redirect_url_path.lstrip('/')}"
     if safe_path == "//": safe_path = "/"
-
-    final_redirect_base = f"{frontend_base_url}{safe_path}"
+    # Use the validated origin retrieved from the session
+    final_redirect_base = f"{stored_origin_url}{safe_path}"
+    # --- End Final Redirect Base Setup ---
 
     if error_message:
         # Redirect back to the originally intended frontend path with error info
@@ -159,7 +215,7 @@ async def auth_callback(request: Request) -> RedirectResponse:
     # Create access and refresh tokens
     access_token, refresh_token = create_tokens(user_info)
 
-    # Construct redirect URL with access token in fragment to the originally intended path
+    # Construct redirect URL with access token in fragment to the originally intended origin+path
     redirect_url_with_token = f"{final_redirect_base}#access_token={access_token}"
     logger.debug("Callback success. Redirecting to: %s", redirect_url_with_token)
 
