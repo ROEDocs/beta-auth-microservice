@@ -137,7 +137,7 @@ async def auth_callback(request: Request) -> RedirectResponse:
     Receives the state JWT from Google, validates and decodes it,
     exchanges the Google code for tokens, and redirects the user
     to the origin+path specified within the state JWT.
-    "
+    """
     # --- REMOVE SESSION RETRIEVAL --- 
     # stored_state = request.session.pop('oauth_state', None)
     # stored_origin_url = request.session.pop('oauth_origin_url', None)
@@ -206,7 +206,7 @@ async def auth_callback(request: Request) -> RedirectResponse:
     # Check for Google code
     if not google_code:
         logger.error("Callback missing Google authorization code.")
-        error_params = urlencode({"error": "missing_code", "message": "Authorization code missing.")
+        error_params = urlencode({"error": "missing_code", "message": "Authorization code missing."})
         return RedirectResponse(f"{final_redirect_base}?{error_params}")
 
     # State JWT is valid, proceed with handling the Google code exchange
